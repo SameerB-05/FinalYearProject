@@ -30,3 +30,5 @@ Thumbs.db
 # Keep folder structure
 # -------------------------
 !*/.gitkeep
+
+*.zip
