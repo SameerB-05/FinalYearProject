@@ -9,7 +9,7 @@ _HERE  = Path(__file__).parent
 _CACHE = _HERE / "cache"
 
 # label mapping: fixed per training label encoder order
-_LABEL_MAP = {0: "PAIN", 1: "LIGHT"}
+_LABEL_MAP = {0: "LIGHT", 1: "PAIN"}
 
 
 class KNN_Hindi_model:

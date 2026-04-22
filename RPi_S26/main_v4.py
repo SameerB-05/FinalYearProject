@@ -4,6 +4,8 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import os
+os.environ["PYQTGRAPH_QT_LIB"] = "PyQt5"
 import pyqtgraph as pg
 
 from PyQt5.QtWidgets import (
@@ -34,6 +36,8 @@ DISPLAY_CHANNELS   = ['EEG.Cz', 'EEG.Fz', 'EEG.C3', 'EEG.C4', 'EEG.Pz', 'EEG.Oz'
 CHANNEL_COLORS     = ['#e74c3c', '#3498db', '#2ecc71', '#f39c12', '#9b59b6', '#1abc9c']
 
 Y_MIN, Y_MAX       = -4.0, 4.0   # fixed y-axis range (data is z-score normalized)
+
+GT_SAMPLE_INDEX    = 9            # index within each 1280-sample window used as GT label
 
 ALL_HINDI_CHANNELS = [
     'EEG.Cz',  'EEG.Fz',  'EEG.Fp1', 'EEG.F7',  'EEG.F3',  'EEG.FC1',
@@ -137,7 +141,7 @@ class InferenceWorker(QThread):
                 batch  = window[np.newaxis, :, :]          # (1, 1280, 32)
                 epochs = self.model._preprocess(batch)     # (n_epochs, 256, 32)
                 pred   = self.model.predict(epochs)
-                word   = "PAIN" if pred == 0 else "LIGHT"
+                word = "LIGHT" if pred == 0 else "PAIN"
             except Exception as e:
                 word = f"ERR:{e}"
             self.result_ready.emit(seg_idx, start_sec, end_sec, word)
@@ -153,21 +157,24 @@ class InferenceWorker(QThread):
 class ChildWindow(QWidget):
     closed = pyqtSignal()   # notifies parent when user closes this window
 
-    def __init__(self, raw_data, total_windows, model, parent=None):
+    def __init__(self, raw_data, total_windows, model, gt_labels, parent=None):
         super().__init__(parent)
         self.raw_data       = raw_data
         self.total_windows  = total_windows
         self.model          = model
+        self.gt_labels      = gt_labels   # 1D array of per-window GT y-values
 
         self.current_window  = 0
         self.elapsed_seconds = 0
         self.seg_queue       = queue.Queue()
         self.worker          = None
 
-        # rolling buffer — holds last ROLLING_SAMPLES rows (averaged across display channels)
-        self.roll_buf = np.zeros(ROLLING_SAMPLES, dtype=np.float32)
+        # rolling buffer for averaged EEG signal
+        self.roll_buf    = np.zeros(ROLLING_SAMPLES, dtype=np.float32)
         self._plot_sample_ptr = 0
 
+        # GT annotation segments — same structure as _inference_segments
+        self._gt_segments        = []
         # list of dicts tracking each inferred segment for annotation rolling
         self._inference_segments = []
 
@@ -215,10 +222,10 @@ class ChildWindow(QWidget):
         self.plot_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         layout.addWidget(self.plot_widget)
 
-        self._all_plots = []   # word plot + eeg plot
-        self._curves    = []   # single averaged curve
+        self._all_plots = []   # word plot + gt plot + eeg plot
+        self._curves    = []   # [eeg_curve]
 
-        # --- row 0: word annotation plot ---
+        # --- row 0: predicted word annotation plot ---
         self._word_plot = self.plot_widget.addPlot(row=0, col=0)
         self._word_plot.setYRange(0, 1, padding=0)
         self._word_plot.setXRange(0, ROLLING_SEC, padding=0)
@@ -231,9 +238,23 @@ class ChildWindow(QWidget):
         self._word_plot.setMenuEnabled(False)
         self._all_plots.append(self._word_plot)
 
-        # --- row 1: single averaged EEG plot ---
+        # --- row 1: GT annotation plot (same structure, orange) ---
+        self._gt_plot = self.plot_widget.addPlot(row=1, col=0)
+        self._gt_plot.setYRange(0, 1, padding=0)
+        self._gt_plot.setXRange(0, ROLLING_SEC, padding=0)
+        self._gt_plot.getAxis('bottom').hide()
+        self._gt_plot.getAxis('left').setWidth(45)
+        self._gt_plot.getAxis('left').setStyle(showValues=False)
+        self._gt_plot.setLabel('left', 'GT', color='#e67e22', size='9pt')
+        self._gt_plot.setFixedHeight(50)
+        self._gt_plot.setMouseEnabled(x=False, y=False)
+        self._gt_plot.setMenuEnabled(False)
+        self._gt_plot.setXLink(self._word_plot)
+        self._all_plots.append(self._gt_plot)
+
+        # --- row 2: single averaged EEG plot ---
         x_data = np.arange(ROLLING_SAMPLES) / SAMPLING_RATE
-        p = self.plot_widget.addPlot(row=1, col=0)
+        p = self.plot_widget.addPlot(row=2, col=0)
         p.setYRange(Y_MIN, Y_MAX, padding=0)
         p.setXRange(0, ROLLING_SEC, padding=0)
         p.setLabel('left', 'Avg EEG', color='#333333', size='9pt')
@@ -274,6 +295,12 @@ class ChildWindow(QWidget):
             f"Clip:   {self._fmt(0)}  /  {self._fmt(total_sec)}"
         )
 
+        # --- pre-calculate ALL GT annotations upfront ---
+        for w in range(self.total_windows):
+            start_sec = w * WINDOW_SEC
+            end_sec   = start_sec + WINDOW_SEC
+            self._add_gt_annotation(start_sec, end_sec, self.gt_labels[w])
+
         # start inference worker
         self.worker = InferenceWorker(self.model, self.seg_queue)
         self.worker.result_ready.connect(self._on_inference_result)
@@ -302,13 +329,38 @@ class ChildWindow(QWidget):
         self.seg_queue.put((self.current_window, start_sec, end_sec, window))
         print(f"[Clip] Pushed seg {self.current_window} "
               f"({self._fmt(start_sec)}–{self._fmt(end_sec)})")
+
         self.current_window += 1
 
         # if that was the last segment, finish immediately
-        # without waiting for the next timer tick
         if self.current_window >= self.total_windows:
             self._on_clip_finished()
 
+    def _add_gt_annotation(self, start_sec, end_sec, word):
+        start_sample = start_sec * SAMPLING_RATE
+        end_sample   = end_sec   * SAMPLING_RATE
+
+        dot_pen = pg.mkPen(color='#e67e22', width=1.5, style=Qt.DotLine)
+        lines   = []
+        for plot in self._all_plots:
+            for _ in [start_sample, end_sample]:
+                line = pg.InfiniteLine(pos=0, angle=90, pen=dot_pen, movable=False)
+                plot.addItem(line)
+                lines.append(line)
+
+        text_item = pg.TextItem(text=word, color='#e67e22', anchor=(0.5, 0.5))
+        text_item.setFont(QFont("Arial", 9, QFont.Bold))
+        self._gt_plot.addItem(text_item)
+
+        self._gt_segments.append({
+            'start_sample': start_sample,
+            'end_sample':   end_sample,
+            'word':         word,
+            'lines':        lines,
+            'text_item':    text_item,
+        })
+
+    # ------------------------------------------------------------------
     def _on_clock_tick(self):
         self.elapsed_seconds += 1
         total_sec = self.total_windows * WINDOW_SEC
@@ -324,56 +376,70 @@ class ChildWindow(QWidget):
         # --- data advancement ---
         total_samples = len(self.raw_data)
         if self._plot_sample_ptr < total_samples:
-            end_ptr     = min(self._plot_sample_ptr + PLOT_DOWNSAMPLE, total_samples)
-            new_chunk   = self.raw_data[self._plot_sample_ptr:end_ptr, :]
-            # average across display channels only
-            new_avg     = new_chunk[:, DISPLAY_INDICES].mean(axis=1)  # (n,)
+            end_ptr   = min(self._plot_sample_ptr + PLOT_DOWNSAMPLE, total_samples)
+            new_chunk = self.raw_data[self._plot_sample_ptr:end_ptr, :]
+            new_avg   = new_chunk[:, DISPLAY_INDICES].mean(axis=1)
 
             n = len(new_avg)
-            self.roll_buf = np.roll(self.roll_buf, -n)
+            self.roll_buf      = np.roll(self.roll_buf, -n)
             self.roll_buf[-n:] = new_avg
             self._plot_sample_ptr = end_ptr
 
             x_data = np.arange(ROLLING_SAMPLES) / SAMPLING_RATE
             self._curves[0].setData(x_data, self.roll_buf)
 
-        # --- annotation position update (always runs) ---
+        # --- annotation position update (inference + GT, always runs) ---
         right_edge_sample = self._plot_sample_ptr
         left_edge_sample  = right_edge_sample - ROLLING_SAMPLES
 
-        to_remove = []
-        for seg in self._inference_segments:
-            x_start = (seg['start_sample'] - left_edge_sample) / SAMPLING_RATE
-            x_end   = (seg['end_sample']   - left_edge_sample) / SAMPLING_RATE
-            x_mid   = (x_start + x_end) / 2
+        def _update_seg_list(seg_list, text_plot):
+            to_remove = []
+            for seg in seg_list:
+                x_start = (seg['start_sample'] - left_edge_sample) / SAMPLING_RATE
+                x_end   = (seg['end_sample']   - left_edge_sample) / SAMPLING_RATE
+                x_mid   = (x_start + x_end) / 2
 
-            fully_off = x_end < 0 or x_start > ROLLING_SEC
-
-            if fully_off:
-                for line in seg['lines']:
-                    line.hide()
-                seg['text_item'].hide()
+                # fully scrolled off left — remove
                 if x_end < 0:
+                    for line in seg['lines']:
+                        line.hide()
+                    seg['text_item'].hide()
                     to_remove.append(seg)
-            else:
+                    continue
+
+                # dotted lines — show only within visible range
                 for line, x_pos in zip(seg['lines'][::2],
                                        [x_start] * len(self._all_plots)):
-                    line.setPos(max(0, x_pos))
-                    line.show() if x_start >= 0 else line.hide()
+                    if 0 <= x_pos <= ROLLING_SEC:
+                        line.setPos(x_pos)
+                        line.show()
+                    else:
+                        line.hide()
 
                 for line, x_pos in zip(seg['lines'][1::2],
                                        [x_end] * len(self._all_plots)):
-                    line.setPos(min(ROLLING_SEC, x_pos))
-                    line.show() if x_end <= ROLLING_SEC else line.hide()
+                    if 0 <= x_pos <= ROLLING_SEC:
+                        line.setPos(x_pos)
+                        line.show()
+                    else:
+                        line.hide()
 
-                seg['text_item'].setPos(max(0, x_mid), 0.5)
-                seg['text_item'].show()
+                # text — follows true x_mid with no clamping
+                # visible whenever any part of segment overlaps rolling window
+                if x_end >= 0 and x_start <= ROLLING_SEC:
+                    seg['text_item'].setPos(x_mid, 0.5)
+                    seg['text_item'].show()
+                else:
+                    seg['text_item'].hide()
 
-        for seg in to_remove:
-            for line in seg['lines']:
-                line.getViewBox().removeItem(line)
-            self._word_plot.removeItem(seg['text_item'])
-            self._inference_segments.remove(seg)
+            for seg in to_remove:
+                for line in seg['lines']:
+                    line.getViewBox().removeItem(line)
+                text_plot.removeItem(seg['text_item'])
+                seg_list.remove(seg)
+
+        _update_seg_list(self._inference_segments, self._word_plot)
+        _update_seg_list(self._gt_segments,        self._gt_plot)
 
     # ------------------------------------------------------------------
     def _on_clip_finished(self):
@@ -462,6 +528,7 @@ class ChildWindow(QWidget):
         with self.seg_queue.mutex:
             self.seg_queue.queue.clear()
         self._inference_segments.clear()
+        self._gt_segments.clear()
 
     def closeEvent(self, event):
         self._cleanup()
@@ -568,7 +635,7 @@ class ParentWindow(QWidget):
         # load data
         try:
             self._update_status("Loading data...")
-            raw_data, total_windows = self._load_data()
+            raw_data, total_windows, gt_per_window = self._load_data()
         except Exception as e:
             self._update_status(f"Data error: {e}")
             return
@@ -588,12 +655,14 @@ class ParentWindow(QWidget):
 
         # hide parent, open child
         self.hide()
-        self.child_window = ChildWindow(raw_data, total_windows, self.model)
+        self.child_window = ChildWindow(raw_data, total_windows, self.model, gt_per_window)
         self.child_window.closed.connect(self._on_child_closed)
         self.child_window.show()
 
     def _load_data(self):
-        data_path = Path(self.selected_path) / "data.csv"
+        data_path   = Path(self.selected_path) / "data.csv"
+        labels_path = Path(self.selected_path) / "labels.csv"
+
         df   = pd.read_csv(data_path)
         data = df.iloc[:, 1:].astype(np.float32).values
         data = np.nan_to_num(data)
@@ -602,8 +671,22 @@ class ParentWindow(QWidget):
         std[std == 0] = 1
         data = (data - mean) / std
         total_windows = len(data) // WINDOW_SAMPLES
+
+        # load GT labels — one string label per sample row
+        gt_labels_raw = pd.read_csv(labels_path).iloc[:, 0].values
+
+        # extract one GT word string per 5-sec window using GT_SAMPLE_INDEX
+        gt_per_window = []
+        for w in range(total_windows):
+            sample_idx = w * WINDOW_SAMPLES + GT_SAMPLE_INDEX
+            if sample_idx < len(gt_labels_raw):
+                gt_per_window.append(str(gt_labels_raw[sample_idx]).strip().upper())
+            else:
+                gt_per_window.append("?")
+        gt_per_window = np.array(gt_per_window)
+
         print(f"Total rows: {len(data)}, windows: {total_windows}")
-        return data, total_windows
+        return data, total_windows, gt_per_window
 
     # ------------------------------------------------------------------
     def _on_child_closed(self):
