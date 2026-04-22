@@ -550,7 +550,7 @@ class ParentWindow(QWidget):
         self.scale         = 2
 
         self.setObjectName("ParentWindow")
-        self.setWindowTitle("Imagined Word Recognition v3")
+        self.setWindowTitle("Imagined Word Recognition v4")
         self.setFixedSize(800, 480)
 
         res = QDesktopWidget().availableGeometry()
