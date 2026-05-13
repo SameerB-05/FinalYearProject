@@ -14,7 +14,7 @@ from PyQt5.QtWidgets import (
     QDesktopWidget, QSizePolicy
 )
 from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal
-from PyQt5.QtGui import QFont, QFontMetrics, QPainter, QPainterPath, QPen, QColor, QIcon
+from PyQt5.QtGui import QFont, QFontMetrics, QPainter, QPainterPath, QPen, QColor, QIcon, QPalette
 from PyQt5.QtCore import QRectF
 
 from models.knn_hindi.knn_hindi import KNN_Hindi_model
@@ -22,22 +22,22 @@ from models.knn_hindi.knn_hindi import KNN_Hindi_model
 # =============================================================================
 # USER-CONFIGURABLE CONSTANTS
 # =============================================================================
-SAMPLING_RATE      = 256          # Hz
-WINDOW_SEC         = 5            # seconds per inference segment
+SAMPLING_RATE      = 256
+WINDOW_SEC         = 5
 WINDOW_SAMPLES     = SAMPLING_RATE * WINDOW_SEC   # 1280
 
-ROLLING_SEC        = 20           # seconds of history shown in rolling plot
+ROLLING_SEC        = 20
 ROLLING_SAMPLES    = SAMPLING_RATE * ROLLING_SEC  # 5120
 
-PLOT_DOWNSAMPLE    = 32           # plot every Nth sample  →  256/32 = 8 updates/sec
+PLOT_DOWNSAMPLE    = 32
 PLOT_INTERVAL_MS   = int(1000 / (SAMPLING_RATE / PLOT_DOWNSAMPLE))  # ~125 ms
 
 DISPLAY_CHANNELS   = ['EEG.Cz', 'EEG.Fz', 'EEG.C3', 'EEG.C4', 'EEG.Pz', 'EEG.Oz']
 CHANNEL_COLORS     = ['#e74c3c', '#3498db', '#2ecc71', '#f39c12', '#9b59b6', '#1abc9c']
 
-Y_MIN, Y_MAX       = -4.0, 4.0   # fixed y-axis range (data is z-score normalized)
+Y_MIN, Y_MAX       = -4.0, 4.0
 
-GT_SAMPLE_INDEX    = 9            # index within each 1280-sample window used as GT label
+GT_SAMPLE_INDEX    = 9
 
 ALL_HINDI_CHANNELS = [
     'EEG.Cz',  'EEG.Fz',  'EEG.Fp1', 'EEG.F7',  'EEG.F3',  'EEG.FC1',
@@ -48,61 +48,128 @@ ALL_HINDI_CHANNELS = [
     'EEG.F8',  'EEG.Fp2'
 ]
 
-# indices of DISPLAY_CHANNELS within ALL_HINDI_CHANNELS
 DISPLAY_INDICES = [ALL_HINDI_CHANNELS.index(ch) for ch in DISPLAY_CHANNELS]
 
+# =============================================================================
+# COLORS — defined once, used everywhere so nothing leaks through from the OS
+# =============================================================================
+BG_TOP      = "#eaf6ff"   # gradient top
+BG_BOT      = "#b3e0ff"   # gradient bottom
+BG_SOLID    = "#cceeff"   # solid fallback (used for labels, plot bg)
+ACCENT      = "#77b9f7"   # buttons / combo
+ACCENT_HOV  = "#45a1f7"   # hover
+TEXT_DARK   = "#222222"   # primary text
+TEXT_MID    = "#333333"   # secondary text
+BORDER      = "#000000"
+PLOT_BG     = "#f0f8ff"
+PLOT_FG     = "#333333"
+EEG_LINE    = "#2980b9"
+PRED_BG     = "#77b9f7"   # prediction label background
+PRED_TEXT   = "#ffffff"   # white text — readable on PRED_BG regardless of theme
+GT_COLOR    = "#e67e22"
+INF_COLOR   = "#555555"
 
 # =============================================================================
-# Shared stylesheet
+# Force application-wide palette so RPi dark theme cannot override any widget
 # =============================================================================
-STYLESHEET = """
-    QWidget {
+def apply_forced_palette(app: QApplication):
+    pal = QPalette()
+    bg  = QColor(BG_SOLID)
+    fg  = QColor(TEXT_DARK)
+    acc = QColor(ACCENT)
+
+    # Window / panel backgrounds
+    pal.setColor(QPalette.Window,          bg)
+    pal.setColor(QPalette.Base,            bg)
+    pal.setColor(QPalette.AlternateBase,   bg)
+    pal.setColor(QPalette.Button,          acc)
+    pal.setColor(QPalette.Highlight,       acc)
+
+    # Text colours
+    pal.setColor(QPalette.WindowText,      fg)
+    pal.setColor(QPalette.Text,            fg)
+    pal.setColor(QPalette.ButtonText,      fg)
+    pal.setColor(QPalette.HighlightedText, QColor("#ffffff"))
+
+    # Tooltips
+    pal.setColor(QPalette.ToolTipBase,     bg)
+    pal.setColor(QPalette.ToolTipText,     fg)
+
+    app.setPalette(pal)
+
+
+# =============================================================================
+# Shared stylesheet — every colour is explicit; nothing inherits from OS
+# =============================================================================
+STYLESHEET = f"""
+    QWidget {{
         background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
-            stop:0 #eaf6ff, stop:1 #b3e0ff);
+            stop:0 {BG_TOP}, stop:1 {BG_BOT});
+        color: {TEXT_DARK};
         font-family: 'Segoe UI', sans-serif;
-    }
-    QLabel { font-size: 16px; color: #333; }
-    QComboBox {
+    }}
+    QLabel {{
+        font-size: 16px;
+        color: {TEXT_DARK};
+        background: transparent;
+    }}
+    QComboBox {{
         font-size: 20px;
         padding: 6px 12px;
         border-radius: 8px;
         font-weight: bold;
-        background-color: #77b9f7;
-        color: black;
-        border: 2px solid #000000;
-    }
-    QComboBox:hover { background-color: #45a1f7; }
-    QComboBox::drop-down {
+        background-color: {ACCENT};
+        color: {TEXT_DARK};
+        border: 2px solid {BORDER};
+    }}
+    QComboBox:hover {{ background-color: {ACCENT_HOV}; }}
+    QComboBox QAbstractItemView {{
+        background-color: {BG_SOLID};
+        color: {TEXT_DARK};
+        selection-background-color: {ACCENT};
+        selection-color: {TEXT_DARK};
+        border: 1px solid {BORDER};
+    }}
+    QComboBox::drop-down {{
         subcontrol-origin: padding;
         subcontrol-position: top right;
         width: 24px;
-        border-left: 2px solid black;
-    }
-    QComboBox::down-arrow {
+        border-left: 2px solid {BORDER};
+    }}
+    QComboBox::down-arrow {{
         image: url(utils/arrow.png);
         width: 12px; height: 12px;
-    }
-    QPushButton {
+    }}
+    QPushButton {{
         font-size: 20px;
         padding: 6px 12px;
         border-radius: 8px;
         font-weight: bold;
-        border: 2px solid #000000;
-        background-color: #77b9f7;
-        color: black;
-    }
-    QPushButton:hover { background-color: #45a1f7; }
+        border: 2px solid {BORDER};
+        background-color: {ACCENT};
+        color: {TEXT_DARK};
+    }}
+    QPushButton:hover {{ background-color: {ACCENT_HOV}; }}
+    QScrollBar {{
+        background: {BG_SOLID};
+    }}
 """
 
 
 # =============================================================================
-# Custom rounded label
+# Custom rounded label — draws its own opaque background so OS can't bleed in
 # =============================================================================
 class CustomLabel(QLabel):
-    def __init__(self, *args, padding=4, **kwargs):
+    def __init__(self, *args, padding=4, bg=PRED_BG, fg=PRED_TEXT, **kwargs):
         super().__init__(*args, **kwargs)
-        self.padding = padding
-        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.padding  = padding
+        self._bg      = QColor(bg)
+        self._fg      = QColor(fg)
+        self._border  = QColor(BORDER)
+        # Do NOT set WA_TranslucentBackground — we paint our own solid bg
+        self.setStyleSheet(
+            f"color: {fg}; background: transparent; font-size: 50px;"
+        )
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -113,9 +180,18 @@ class CustomLabel(QLabel):
         )
         path = QPainterPath()
         path.addRoundedRect(QRectF(rect), 20, 20)
-        painter.setPen(QPen(QColor("#000000"), 2))
+
+        # Fill with our forced background colour
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(self._bg)
+        painter.drawPath(path)
+
+        # Border
+        painter.setPen(QPen(self._border, 2))
         painter.setBrush(Qt.NoBrush)
         painter.drawPath(path)
+
+        # Let QLabel draw the text on top (it will use our stylesheet color)
         super().paintEvent(event)
 
 
@@ -123,7 +199,7 @@ class CustomLabel(QLabel):
 # Inference worker thread
 # =============================================================================
 class InferenceWorker(QThread):
-    result_ready = pyqtSignal(int, int, int, str)   # seg_idx, start_sec, end_sec, word
+    result_ready = pyqtSignal(int, int, int, str)
 
     def __init__(self, model, seg_queue):
         super().__init__()
@@ -138,10 +214,10 @@ class InferenceWorker(QThread):
             except queue.Empty:
                 continue
             try:
-                batch  = window[np.newaxis, :, :]          # (1, 1280, 32)
-                epochs = self.model._preprocess(batch)     # (n_epochs, 256, 32)
+                batch  = window[np.newaxis, :, :]
+                epochs = self.model._preprocess(batch)
                 pred   = self.model.predict(epochs)
-                word = "LIGHT" if pred == 0 else "PAIN"
+                word   = "LIGHT" if pred == 0 else "PAIN"
             except Exception as e:
                 word = f"ERR:{e}"
             self.result_ready.emit(seg_idx, start_sec, end_sec, word)
@@ -155,37 +231,41 @@ class InferenceWorker(QThread):
 # Child window — rolling EEG plot + prediction display
 # =============================================================================
 class ChildWindow(QWidget):
-    closed = pyqtSignal()   # notifies parent when user closes this window
+    closed = pyqtSignal()
 
     def __init__(self, raw_data, total_windows, model, gt_labels, parent=None):
         super().__init__(parent)
         self.raw_data       = raw_data
         self.total_windows  = total_windows
         self.model          = model
-        self.gt_labels      = gt_labels   # 1D array of per-window GT y-values
+        self.gt_labels      = gt_labels
 
         self.current_window  = 0
         self.elapsed_seconds = 0
         self.seg_queue       = queue.Queue()
         self.worker          = None
 
-        # rolling buffer for averaged EEG signal
-        self.roll_buf    = np.zeros(ROLLING_SAMPLES, dtype=np.float32)
+        self.roll_buf         = np.zeros(ROLLING_SAMPLES, dtype=np.float32)
         self._plot_sample_ptr = 0
 
-        # GT annotation segments — same structure as _inference_segments
         self._gt_segments        = []
-        # list of dicts tracking each inferred segment for annotation rolling
         self._inference_segments = []
 
         self.setWindowTitle("Realtime EEG Inference")
         self.setFixedSize(800, 480)
+        self.setStyleSheet(STYLESHEET)
+
+        # Force window background via palette too (belt + braces)
+        pal = self.palette()
+        pal.setColor(QPalette.Window, QColor(BG_SOLID))
+        self.setPalette(pal)
+        self.setAutoFillBackground(True)
+
         res = QDesktopWidget().availableGeometry()
         self.move(
             (res.width()  - self.frameSize().width())  // 2,
             (res.height() - self.frameSize().height()) // 2
         )
-        self.setStyleSheet(STYLESHEET)
 
         self._build_ui()
         self._build_timers()
@@ -197,33 +277,39 @@ class ChildWindow(QWidget):
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(8)
 
-        # predicted word
-        self.predicted_label = CustomLabel("Prediction")
+        # Predicted word label — always blue background, white text
+        self.predicted_label = CustomLabel(
+            "Prediction", padding=4,
+            bg=PRED_BG, fg=PRED_TEXT
+        )
         self.predicted_label.setAlignment(Qt.AlignCenter)
-        self.predicted_label.setStyleSheet("font-size:50px; color:#77b9f7;")
         self.predicted_label.setFixedHeight(80)
         layout.addWidget(self.predicted_label, alignment=Qt.AlignCenter)
 
-        # clock + inference row — both centre aligned
+        # Clock + inference row
         info_row = QHBoxLayout()
         self.clip_label  = QLabel("Clip:   00:00  /  --:--")
         self.infer_label = QLabel("Inference: waiting...")
-        self.clip_label.setAlignment(Qt.AlignCenter)
-        self.infer_label.setAlignment(Qt.AlignCenter)
+        for lbl in (self.clip_label, self.infer_label):
+            lbl.setAlignment(Qt.AlignCenter)
+            lbl.setStyleSheet(
+                f"color: {TEXT_DARK}; background: transparent; font-size: 16px;"
+            )
         info_row.addWidget(self.clip_label)
         info_row.addWidget(self.infer_label)
         layout.addLayout(info_row)
 
-        # pyqtgraph rolling plot
-        pg.setConfigOption('background', '#f0f8ff')
-        pg.setConfigOption('foreground', '#333333')
+        # pyqtgraph — force its own colours explicitly
+        pg.setConfigOption('background', PLOT_BG)
+        pg.setConfigOption('foreground', PLOT_FG)
 
         self.plot_widget = pg.GraphicsLayoutWidget()
+        self.plot_widget.setBackground(PLOT_BG)
         self.plot_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         layout.addWidget(self.plot_widget)
 
-        self._all_plots = []   # word plot + gt plot + eeg plot
-        self._curves    = []   # [eeg_curve]
+        self._all_plots = []
+        self._curves    = []
 
         # --- row 0: predicted word annotation plot ---
         self._word_plot = self.plot_widget.addPlot(row=0, col=0)
@@ -232,20 +318,20 @@ class ChildWindow(QWidget):
         self._word_plot.getAxis('bottom').hide()
         self._word_plot.getAxis('left').setWidth(45)
         self._word_plot.getAxis('left').setStyle(showValues=False)
-        self._word_plot.setLabel('left', 'Pred', color='#333333', size='9pt')
+        self._word_plot.setLabel('left', 'Pred', color=PLOT_FG, size='9pt')
         self._word_plot.setFixedHeight(50)
         self._word_plot.setMouseEnabled(x=False, y=False)
         self._word_plot.setMenuEnabled(False)
         self._all_plots.append(self._word_plot)
 
-        # --- row 1: GT annotation plot (same structure, orange) ---
+        # --- row 1: GT annotation plot ---
         self._gt_plot = self.plot_widget.addPlot(row=1, col=0)
         self._gt_plot.setYRange(0, 1, padding=0)
         self._gt_plot.setXRange(0, ROLLING_SEC, padding=0)
         self._gt_plot.getAxis('bottom').hide()
         self._gt_plot.getAxis('left').setWidth(45)
         self._gt_plot.getAxis('left').setStyle(showValues=False)
-        self._gt_plot.setLabel('left', 'GT', color='#e67e22', size='9pt')
+        self._gt_plot.setLabel('left', 'GT', color=GT_COLOR, size='9pt')
         self._gt_plot.setFixedHeight(50)
         self._gt_plot.setMouseEnabled(x=False, y=False)
         self._gt_plot.setMenuEnabled(False)
@@ -257,7 +343,7 @@ class ChildWindow(QWidget):
         p = self.plot_widget.addPlot(row=2, col=0)
         p.setYRange(Y_MIN, Y_MAX, padding=0)
         p.setXRange(0, ROLLING_SEC, padding=0)
-        p.setLabel('left', 'Avg EEG', color='#333333', size='9pt')
+        p.setLabel('left', 'Avg EEG', color=PLOT_FG, size='9pt')
         p.getAxis('left').setWidth(45)
         p.showGrid(x=True, y=False, alpha=0.3)
         p.setMouseEnabled(x=False, y=False)
@@ -266,24 +352,21 @@ class ChildWindow(QWidget):
         p.setXLink(self._word_plot)
 
         curve = p.plot(x_data, self.roll_buf,
-                       pen=pg.mkPen(color='#2980b9', width=1.5))
+                       pen=pg.mkPen(color=EEG_LINE, width=1.5))
         self._eeg_plot = p
         self._curves.append(curve)
         self._all_plots.append(p)
 
     # ------------------------------------------------------------------
     def _build_timers(self):
-        # 5-sec clip timer
         self.clip_timer = QTimer()
         self.clip_timer.setInterval(WINDOW_SEC * 1000)
         self.clip_timer.timeout.connect(self._on_clip_tick)
 
-        # 1-sec clock timer
         self.clock_timer = QTimer()
         self.clock_timer.setInterval(1000)
         self.clock_timer.timeout.connect(self._on_clock_tick)
 
-        # plot update timer
         self.plot_timer = QTimer()
         self.plot_timer.setInterval(PLOT_INTERVAL_MS)
         self.plot_timer.timeout.connect(self._on_plot_tick)
@@ -295,24 +378,19 @@ class ChildWindow(QWidget):
             f"Clip:   {self._fmt(0)}  /  {self._fmt(total_sec)}"
         )
 
-        # --- pre-calculate ALL GT annotations upfront ---
         for w in range(self.total_windows):
             start_sec = w * WINDOW_SEC
             end_sec   = start_sec + WINDOW_SEC
             self._add_gt_annotation(start_sec, end_sec, self.gt_labels[w])
 
-        # start inference worker
         self.worker = InferenceWorker(self.model, self.seg_queue)
         self.worker.result_ready.connect(self._on_inference_result)
         self.worker.start()
 
-        # start all timers
         self.clip_timer.start()
         self.clock_timer.start()
         self.plot_timer.start()
 
-    # ------------------------------------------------------------------
-    # TIMER SLOTS
     # ------------------------------------------------------------------
     def _on_clip_tick(self):
         if self.current_window >= self.total_windows:
@@ -332,7 +410,6 @@ class ChildWindow(QWidget):
 
         self.current_window += 1
 
-        # if that was the last segment, finish immediately
         if self.current_window >= self.total_windows:
             self._on_clip_finished()
 
@@ -340,7 +417,7 @@ class ChildWindow(QWidget):
         start_sample = start_sec * SAMPLING_RATE
         end_sample   = end_sec   * SAMPLING_RATE
 
-        dot_pen = pg.mkPen(color='#e67e22', width=1.5, style=Qt.DotLine)
+        dot_pen = pg.mkPen(color=GT_COLOR, width=1.5, style=Qt.DotLine)
         lines   = []
         for plot in self._all_plots:
             for _ in [start_sample, end_sample]:
@@ -348,7 +425,7 @@ class ChildWindow(QWidget):
                 plot.addItem(line)
                 lines.append(line)
 
-        text_item = pg.TextItem(text=word, color='#e67e22', anchor=(0.5, 0.5))
+        text_item = pg.TextItem(text=word, color=GT_COLOR, anchor=(0.5, 0.5))
         text_item.setFont(QFont("Arial", 9, QFont.Bold))
         self._gt_plot.addItem(text_item)
 
@@ -369,11 +446,6 @@ class ChildWindow(QWidget):
         )
 
     def _on_plot_tick(self):
-        """
-        Advances _plot_sample_ptr, computes channel average,
-        updates rolling buffer and curve. Annotation update always runs.
-        """
-        # --- data advancement ---
         total_samples = len(self.raw_data)
         if self._plot_sample_ptr < total_samples:
             end_ptr   = min(self._plot_sample_ptr + PLOT_DOWNSAMPLE, total_samples)
@@ -388,7 +460,6 @@ class ChildWindow(QWidget):
             x_data = np.arange(ROLLING_SAMPLES) / SAMPLING_RATE
             self._curves[0].setData(x_data, self.roll_buf)
 
-        # --- annotation position update (inference + GT, always runs) ---
         right_edge_sample = self._plot_sample_ptr
         left_edge_sample  = right_edge_sample - ROLLING_SAMPLES
 
@@ -399,7 +470,6 @@ class ChildWindow(QWidget):
                 x_end   = (seg['end_sample']   - left_edge_sample) / SAMPLING_RATE
                 x_mid   = (x_start + x_end) / 2
 
-                # fully scrolled off left — remove
                 if x_end < 0:
                     for line in seg['lines']:
                         line.hide()
@@ -407,25 +477,20 @@ class ChildWindow(QWidget):
                     to_remove.append(seg)
                     continue
 
-                # dotted lines — show only within visible range
                 for line, x_pos in zip(seg['lines'][::2],
                                        [x_start] * len(self._all_plots)):
                     if 0 <= x_pos <= ROLLING_SEC:
-                        line.setPos(x_pos)
-                        line.show()
+                        line.setPos(x_pos); line.show()
                     else:
                         line.hide()
 
                 for line, x_pos in zip(seg['lines'][1::2],
                                        [x_end] * len(self._all_plots)):
                     if 0 <= x_pos <= ROLLING_SEC:
-                        line.setPos(x_pos)
-                        line.show()
+                        line.setPos(x_pos); line.show()
                     else:
                         line.hide()
 
-                # text — follows true x_mid with no clamping
-                # visible whenever any part of segment overlaps rolling window
                 if x_end >= 0 and x_start <= ROLLING_SEC:
                     seg['text_item'].setPos(x_mid, 0.5)
                     seg['text_item'].show()
@@ -460,29 +525,19 @@ class ChildWindow(QWidget):
         self._display_word(word)
         print(f"[Inference] seg {seg_idx + 1} → {word}")
 
-        # --- create annotation for this segment ---
         start_sample = start_sec * SAMPLING_RATE
         end_sample   = end_sec   * SAMPLING_RATE
 
-        dot_pen = pg.mkPen(color='#555555', width=1.5,
-                           style=Qt.DotLine)
-
-        lines = []
-        # two dotted vertical lines per plot (start + end) across all 7 plots
+        dot_pen = pg.mkPen(color=INF_COLOR, width=1.5, style=Qt.DotLine)
+        lines   = []
         for plot in self._all_plots:
             for x_pos in [start_sample, end_sample]:
                 line = pg.InfiniteLine(pos=0, angle=90, pen=dot_pen, movable=False)
                 plot.addItem(line)
                 lines.append(line)
 
-        # word text item on the word plot only
-        text_item = pg.TextItem(
-            text=word,
-            color='#222222',
-            anchor=(0.5, 0.5)
-        )
-        font = QFont("Arial", 9, QFont.Bold)
-        text_item.setFont(font)
+        text_item = pg.TextItem(text=word, color=TEXT_DARK, anchor=(0.5, 0.5))
+        text_item.setFont(QFont("Arial", 9, QFont.Bold))
         self._word_plot.addItem(text_item)
 
         self._inference_segments.append({
@@ -493,8 +548,6 @@ class ChildWindow(QWidget):
             'text_item':    text_item,
         })
 
-        # if clip is done and queue drained, stop plot_timer after a short
-        # delay so the final annotation gets at least one render pass
         if not self.clip_timer.isActive() and self.seg_queue.empty():
             QTimer.singleShot(3000, self.plot_timer.stop)
 
@@ -508,7 +561,11 @@ class ChildWindow(QWidget):
         w = rect.width()  + self.predicted_label.padding * 10
         h = rect.height() + self.predicted_label.padding * 10
         self.predicted_label.setFixedSize(w, h)
-        self.predicted_label.setStyleSheet("font-size:40px; color:#333;")
+        # Keep explicit colors — never let stylesheet inherit from OS
+        self.predicted_label.setStyleSheet(
+            f"color: {PRED_TEXT}; background: transparent; font-size: 40px; font-weight: bold;"
+        )
+        self.predicted_label.update()  # force repaint
 
     # ------------------------------------------------------------------
     def _fmt(self, seconds):
@@ -516,7 +573,6 @@ class ChildWindow(QWidget):
         s = int(seconds) % 60
         return f"{m:02d}:{s:02d}"
 
-    # ------------------------------------------------------------------
     def _cleanup(self):
         self.clip_timer.stop()
         self.clock_timer.stop()
@@ -532,7 +588,7 @@ class ChildWindow(QWidget):
 
     def closeEvent(self, event):
         self._cleanup()
-        self.closed.emit()   # tell parent to reset
+        self.closed.emit()
         event.accept()
 
 
@@ -552,20 +608,29 @@ class ParentWindow(QWidget):
         self.setObjectName("ParentWindow")
         self.setWindowTitle("Imagined Word Recognition v4")
         self.setFixedSize(800, 480)
+        self.setStyleSheet(STYLESHEET)
+
+        # Force palette on parent window too
+        pal = self.palette()
+        pal.setColor(QPalette.Window, QColor(BG_SOLID))
+        pal.setColor(QPalette.WindowText, QColor(TEXT_DARK))
+        self.setPalette(pal)
+        self.setAutoFillBackground(True)
 
         res = QDesktopWidget().availableGeometry()
         self.move(
             (res.width()  - self.frameSize().width())  // 2,
             (res.height() - self.frameSize().height()) // 2
         )
-        self.setStyleSheet(STYLESHEET)
         self._build_ui()
 
     # ------------------------------------------------------------------
     def _build_ui(self):
-
         self.status_label = QLabel("Status: Idle")
         self.status_label.setAlignment(Qt.AlignCenter)
+        self.status_label.setStyleSheet(
+            f"color: {TEXT_DARK}; background: transparent; font-size: 16px;"
+        )
 
         self.browse_button = QPushButton("Data")
         self.browse_button.setFixedSize(100 * self.scale, 38 * self.scale)
@@ -578,6 +643,10 @@ class ParentWindow(QWidget):
         le = self.model_combo.lineEdit()
         le.setAlignment(Qt.AlignCenter)
         le.setReadOnly(True)
+        # Force combo line-edit colours explicitly
+        le.setStyleSheet(
+            f"color: {TEXT_DARK}; background-color: {ACCENT}; border: none;"
+        )
         self.model_combo.currentTextChanged.connect(
             lambda name: setattr(self, 'model_name', name)
         )
@@ -632,7 +701,6 @@ class ParentWindow(QWidget):
             self._update_status("No data folder selected")
             return
 
-        # load data
         try:
             self._update_status("Loading data...")
             raw_data, total_windows, gt_per_window = self._load_data()
@@ -644,7 +712,6 @@ class ParentWindow(QWidget):
             self._update_status("File too short (< 5 sec)")
             return
 
-        # load model
         try:
             self._update_status("Loading model...")
             self.model = KNN_Hindi_model()
@@ -653,7 +720,6 @@ class ParentWindow(QWidget):
             self._update_status(f"Model error: {e}")
             return
 
-        # hide parent, open child
         self.hide()
         self.child_window = ChildWindow(raw_data, total_windows, self.model, gt_per_window)
         self.child_window.closed.connect(self._on_child_closed)
@@ -672,10 +738,8 @@ class ParentWindow(QWidget):
         data = (data - mean) / std
         total_windows = len(data) // WINDOW_SAMPLES
 
-        # load GT labels — one string label per sample row
         gt_labels_raw = pd.read_csv(labels_path).iloc[:, 0].values
 
-        # extract one GT word string per 5-sec window using GT_SAMPLE_INDEX
         gt_per_window = []
         for w in range(total_windows):
             sample_idx = w * WINDOW_SAMPLES + GT_SAMPLE_INDEX
@@ -690,7 +754,6 @@ class ParentWindow(QWidget):
 
     # ------------------------------------------------------------------
     def _on_child_closed(self):
-        """Child was closed — reset parent fully and show it again."""
         self.child_window = None
         self._on_reset()
         self.show()
@@ -700,7 +763,6 @@ class ParentWindow(QWidget):
         self.model         = None
         self._update_status("Idle")
 
-    # ------------------------------------------------------------------
     def closeEvent(self, event):
         if self.child_window is not None:
             self.child_window._cleanup()
@@ -711,6 +773,10 @@ class ParentWindow(QWidget):
 # =============================================================================
 if __name__ == '__main__':
     app = QApplication(sys.argv)
+
+    # Force the entire application palette FIRST before any window is created
+    apply_forced_palette(app)
+
     win = ParentWindow()
     win.show()
     sys.exit(app.exec_())
